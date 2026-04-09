@@ -6,6 +6,16 @@ LLM 호출 없음. 순수 데이터 가공만 담당.
 
 import json
 import os
+import re
+
+
+def _sanitize(text: str) -> str:
+    """
+    오염된 문자 제거.
+    한국어·영어·숫자·기본 특수문자·공백 외의 문자(키릴 문자 등)를 제거.
+    허용 범위: ASCII + 한글(가-힣) + 한글 자모
+    """
+    return re.sub(r"[^\x00-\x7F\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]", "", text)
 
 
 def load_news_data_json(path: str) -> list[dict]:
@@ -42,9 +52,9 @@ def build_evidence_block(items: list[dict], max_chars: int = 3000) -> str:
 
     parts, total = [], 0
     for i, item in enumerate(items, 1):
-        title   = item.get("title", "제목 없음")
+        title   = _sanitize(item.get("title", "제목 없음"))
         url     = item.get("url", "")
-        content = item.get("full_content") or item.get("content", "")
+        content = _sanitize(item.get("full_content") or item.get("content", ""))
         score   = item.get("score", "")
 
         header = f"[증거 {i}] {title}"
