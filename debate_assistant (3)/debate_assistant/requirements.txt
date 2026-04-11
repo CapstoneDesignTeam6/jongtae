@@ -1,6 +1,0 @@
-ollama
-spacy
-konlpy
-langchain-tavily
-# spaCy 모델: python -m spacy download en_core_web_sm
-# 환경변수 필요: TAVILY_API_KEY
