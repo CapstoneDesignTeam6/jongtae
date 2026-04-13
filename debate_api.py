@@ -94,10 +94,10 @@ def get_summary(
     ai_label: str,
     history: list,
     news_data: list,
-    turns: int = 1,
 ) -> dict:
     """
     토론 종료 후 전체 정리 + 피드백.
+    라운드 수는 history에서 자동 계산됩니다.
 
     Args:
         topic      : 토론 주제
@@ -105,7 +105,6 @@ def get_summary(
         ai_label   : AI 입장 레이블   (예: "미국측")
         history    : 전체 토론 기록
         news_data  : 최종 누적 뉴스 배열
-        turns      : 진행된 라운드 수 (기본값 1)
 
     응답:
         {
@@ -118,7 +117,6 @@ def get_summary(
         "topic":      topic,
         "user_label": user_label,
         "ai_label":   ai_label,
-        "turns":      turns,
         "history":    history,
         "news_data":  news_data,
     })
