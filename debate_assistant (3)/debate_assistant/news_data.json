@@ -1,0 +1,62 @@
+[
+  {
+    "title": "Economics of Nuclear Power - World Nuclear Association",
+    "url": "https://world-nuclear.org/information-library/economic-aspects/economics-of-nuclear-power",
+    "content": "In its Annual Energy Outlook 2025, the US EIA noted that no new nuclear capacity is projected to be built in its reference case, reflecting high capital costs estimated at $7,821/kWe overnight (in 2023 values). France's Flamanville 3 EPR was connected to the grid in December 2024 at a total cost of some €23.7 billion, far exceeding initial estimates. In December 2025, EDF released a revised forecasted cost for the six-reactor EPR2 programme at €72.8 billion, with the first reactor at Penly targeted for commissioning in 2038. A 2024 meta-analysis by Idaho National Laboratory found wide cost variations for advanced reactors, suggesting nth-of-a-kind advanced reactors could achieve competitive costs only if significant learning rates were realized.",
+    "score": 0.95
+  },
+  {
+    "title": "Nuclear Energy Factsheet - Center for Sustainable Systems, University of Michigan",
+    "url": "https://css.umich.edu/publications/factsheets/energy/nuclear-energy-factsheet",
+    "content": "Plants begun after 1970 averaged cost overruns of 241%. The Vogtle reactors in Georgia began operation in 2023 and 2024, seven years behind schedule, with total costs reaching $35 billion, 2.5 times the projected cost of $14 billion. The VC Summer dual reactor project in South Carolina was abandoned in 2017 with $9 billion in sunk costs. Recent projects in the UK, France, and Finland have experienced similar delays and cost overruns. Nuclear has the highest capacity factor (92% in 2024) of any power plant type. Only two new U.S. nuclear projects have begun since 1990, both requiring federal subsidies.",
+    "score": 0.93
+  },
+  {
+    "title": "Wind and solar power half the cost of nuclear, says Lazard 2024 LCOE Report",
+    "url": "https://reneweconomy.com.au/wind-and-solar-power-half-the-cost-of-coal-and-gas-one-third-the-cost-of-nuclear-says-lazard/",
+    "content": "Lazard's 2024 LCOE+ analysis found the cost of nuclear power has doubled since 2011, reaching an average of $182/MWh (range: $142–$222/MWh). By comparison, onshore wind averaged $50/MWh and solar PV was similarly low. Even when paired with battery storage, renewables remain significantly cheaper than nuclear. CSIRO's GenCost 2024-2025 report found nuclear electricity would cost $145–$238/MWh by 2040, compared to $22–$53/MWh for solar and $45–$78/MWh for wind. After adding costs of storage and transmission to renewables, a 90% wind and solar grid is still at least one-third cheaper than nuclear.",
+    "score": 0.92
+  },
+  {
+    "title": "Power Play: The Economics Of Nuclear Vs. Renewables - Forbes / World Nuclear Report",
+    "url": "https://www.worldnuclearreport.org/Power-Play-The-Economics-Of-Nuclear-Vs-Renewables",
+    "content": "According to the US Energy Information Administration, the LCOE for advanced nuclear power was estimated at $110/MWh in 2023 and forecasted to remain the same through 2050, while solar PV is estimated at $55/MWh in 2023 and expected to decline to $25/MWh by 2050. Onshore wind was $40/MWh in 2023 and expected to decline to $35/MWh by 2050. In 2024, nuclear's share in global electricity production was 9%. China leads global renewable energy investment, allocating $546 billion in 2022. Similar cost trends favoring renewables were observed in the EU, China, and India.",
+    "score": 0.90
+  },
+  {
+    "title": "New U.S. nuclear power boom begins with old, still-unsolved problem: What to do with radioactive waste - CNBC",
+    "url": "https://www.cnbc.com/2025/11/09/nuclear-power-energy-radioactive-waste-storage-disposal.html",
+    "content": "More than 95,000 metric tons of spent nuclear fuel sits temporarily stockpiled in special water-filled pools or dry casks at 79 sites in 39 US states. The Department of Energy has no permanent disposal facility for nuclear waste, leaving taxpayers liable for payments to utilities of up to $800 million every year in damages — a bill that has reached $11.1 billion since 1998 and could grow to $44.5 billion in the future. The Trump administration aims to quadruple nuclear energy output over the next 25 years, but a clear solution has yet to emerge for radioactive waste storage. As of 2024, the US spent fuel liability was estimated at $44.5 billion.",
+    "score": 0.89
+  },
+  {
+    "title": "Finland Is About to Open the World's First Permanent Nuclear Waste Site - OilPrice.com",
+    "url": "https://oilprice.com/Alternative-Energy/Nuclear-Power/Finland-Is-About-to-Open-the-Worlds-First-Permanent-Nuclear-Waste-Site.html",
+    "content": "Finland's Posiva is on the verge of receiving an operating license for the world's first permanent nuclear waste disposal facility, built 400 meters underground in 1.9-billion-year-old bedrock at a cost of 1 billion euros. The facility will house canisters of spent fuel and will be capable of housing 6,500 tons of spent nuclear fuel. Global spent nuclear fuel stocks are set to surge alongside the nuclear energy renaissance. Construction of the Onkalo facility started in 2000; Posiva estimates that running, filling, and eventually sealing the site over the next century will cost 5.5 billion euros total.",
+    "score": 0.88
+  },
+  {
+    "title": "The thorny social problem of permanent nuclear waste storage - Bulletin of the Atomic Scientists",
+    "url": "https://thebulletin.org/2024/07/the-thorny-social-problem-of-permanent-nuclear-waste-storage/",
+    "content": "The United States knew since 1957 how best to dispose of nuclear waste — deep geological burial — yet the spent nuclear fuel from 94 operating reactors remains in temporary cold storage decades later. The US intends to triple its nuclear energy capacity by 2050, yet experts say there is not enough public discussion of how to deal with the corresponding increase in radioactive waste. Engineers know how to build a repository capable of safeguarding the public for millennia, but the bigger challenge is convincing communities that it is safe to live nearby. The US is scrambling to catch up to Finland and Canada after failing to establish a deep geological repository a generation ago.",
+    "score": 0.86
+  },
+  {
+    "title": "Nuclear power could solve US electricity needs. But at what cost? - WRKF / NPR",
+    "url": "https://www.wrkf.org/2024-10-17/nuclear-power-could-solve-us-electricity-needs-but-at-what-cost",
+    "content": "The most recent US nuclear expansion, Georgia Power's Plant Vogtle, cost more than twice its original budget at nearly $35 billion and took 15 years to build. The original contractors, Westinghouse Electric Co., went bankrupt when costs on Vogtle and a similar project in South Carolina skyrocketed. A shuttered Michigan nuclear plant (Palisades) revealed potentially hundreds of millions of dollars in repairs needed before restart, including cooling tower rebuilds and steam generator repairs. The stringent safety requirements built into nuclear permitting and construction are a primary driver of the highest costs of any power plant type.",
+    "score": 0.85
+  },
+  {
+    "title": "11 Big Wins for Nuclear Energy in 2024 - US Department of Energy",
+    "url": "https://www.energy.gov/ne/articles/11-big-wins-nuclear-energy-2024",
+    "content": "The US DOE closed a $1.52 billion loan to repower and upgrade the Palisades nuclear power plant in Michigan — the first reactor ever to be recommissioned in the United States if approved by the NRC. DOE launched a $900 million program to demonstrate up to two advanced light-water small modular reactor (SMR) systems. TerraPower started non-nuclear construction on a sodium test facility for its Natrium reactor in Kemmerer, Wyoming, a 345-MWe sodium-cooled fast reactor near a retiring coal plant. Constellation also announced plans to restart Three Mile Island Unit 1 in Pennsylvania through a 20-year power purchase agreement with Microsoft.",
+    "score": 0.83
+  },
+  {
+    "title": "Radioactive Waste Management - World Nuclear Association",
+    "url": "https://world-nuclear.org/information-library/nuclear-fuel-cycle/nuclear-waste/radioactive-waste-management",
+    "content": "In 2024, nuclear reactors worldwide generated 2,667 TWh of electricity, marking the highest annual output ever achieved by the global nuclear fleet. About 400,000 tonnes of used fuel has been discharged from reactors worldwide, with about one-third having been reprocessed. Only a small volume of nuclear waste (~3% of the total) is long-lived and highly radioactive, requiring isolation for many thousands of years. International scientific consensus holds that deep geological disposal is the best option for final disposal of high-level radioactive waste. Safe methods for final disposal of high-level radioactive waste are technically proven, with projects well advanced in Finland and Sweden.",
+    "score": 0.81
+  }
+]
