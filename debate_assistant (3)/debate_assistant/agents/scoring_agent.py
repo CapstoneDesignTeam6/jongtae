@@ -2,30 +2,24 @@
 agents/scoring_agent.py — 턴별 사용자 발언 평가
 
 [평가 지표 5개]
-  1. 발언 구체성   : ~인 것 같다 / ~라고 들었다 같은 불확실 표현 vs 구체적 사례·수치
-  2. 인과 연결     : 사례만 나열 vs 사례 + 상황 설명 + 결과 연결
-  3. 도메인 다양성 : 토론 전체에서 다룬 도메인 영역의 폭
-  4. 정보 주도성   : AI 발언에만 반응 vs 사용자가 새 시사 이슈·주제를 스스로 꺼내는지
-  5. 편향도        : 유리한 통계만 사용 / 반례 무시 / 감정 선동 여부를 종합 평가
-                    (점수가 높을수록 편향이 낮고 균형 잡힌 논증)
+  1. 발언 구체성   specificity          : 수치·사례·출처의 정밀도
+  2. 인과 연결     causality            : 원인-결과-함의 연결 깊이
+  3. 도메인 폭     domain_breadth       : 한 발언 안에서 넘나드는 영역의 수
+  4. 정보 자립도   information_autonomy : 스스로 구성한 정보 비율
+  5. 개념 정확도   conceptual_accuracy  : 전문용어·고유명사의 정확한 사용
 
 [반환 구조]
   turn_score:
     {
       "turn": 1,
       "scores": {
-        "specificity": { "score": 1~5, "reason": "...", "evidence": "..." },
-        "causality":   { "score": 1~5, "reason": "...", "evidence": "..." },
-        "domain":      { "score": 1~5, "reason": "...", "evidence": "...", "domains": [...] },
-        "initiative":  { "score": 1~5, "reason": "...", "evidence": "..." },
-        "bias":        {
-                         "score": 1~5, "reason": "...", "evidence": "...",
-                         "details": {
-                           "stat_bias":      "유리한 통계만 사용했는지 한 줄 평",
-                           "counterarg":     "반례를 무시했는지 한 줄 평",
-                           "emotional_bias": "감정 선동에 의존했는지 한 줄 평"
-                         }
-                       },
+        "specificity":           { "score": 1~5, "reason": "...", "evidence": "..." },
+        "causality":             { "score": 1~5, "reason": "...", "evidence": "..." },
+        "domain_breadth":        { "score": 1~5, "reason": "...", "evidence": "...",
+                                   "domain_keywords": [...] },
+        "information_autonomy":  { "score": 1~5, "reason": "...", "evidence": "..." },
+        "conceptual_accuracy":   { "score": 1~5, "reason": "...", "evidence": "...",
+                                   "errors": null | "설명" }
       },
       "total": 5~25
     }
@@ -34,11 +28,11 @@ agents/scoring_agent.py — 턴별 사용자 발언 평가
     {
       "turns": [ turn_score, ... ],
       "summary": {
-        "specificity": { "avg": float, "trend": "상승"|"하락"|"유지", "scores_per_turn": [...] },
-        "causality":   { ... },
-        "domain":      { ..., "all_domains": [...] },
-        "initiative":  { ... },
-        "bias":        { ... },
+        "specificity":          { "avg": float, "trend": "상승"|"하락"|"유지", "scores_per_turn": [...] },
+        "causality":            { ... },
+        "domain_breadth":       { ..., "all_domain_keywords": [...] },
+        "information_autonomy": { ... },
+        "conceptual_accuracy":  { ..., "all_errors": [...] }
       },
       "total_avg": float
     }
@@ -51,7 +45,13 @@ from data.evidence import build_history_block
 from agents.llm import call_ollama
 
 
-METRICS = ["specificity", "causality", "domain", "initiative", "bias"]
+METRICS = [
+    "specificity",
+    "causality",
+    "domain_breadth",
+    "information_autonomy",
+    "conceptual_accuracy",
+]
 
 
 # ── 유틸 ─────────────────────────────────────────────────────────
@@ -94,7 +94,6 @@ class ScoringAgent:
         current_user_utterance = user_turns[turn_number - 1]
         prev_ai_utterance      = self._get_prev_ai(history, turn_number)
         history_block          = build_history_block(history)
-        prior_domains          = self._collect_prior_domains()
 
         result = self._evaluate(
             topic=topic,
@@ -102,7 +101,6 @@ class ScoringAgent:
             current_user_utterance=current_user_utterance,
             prev_ai_utterance=prev_ai_utterance,
             history_block=history_block,
-            prior_domains=prior_domains,
         )
 
         self._turn_scores.append(result)
@@ -126,11 +124,22 @@ class ScoringAgent:
                 "trend":           _trend(scores),
                 "scores_per_turn": scores,
             }
-            if m == "domain":
-                all_domains: list[str] = []
+            # 도메인 키워드 누적
+            if m == "domain_breadth":
+                all_kw: list[str] = []
                 for t in self._turn_scores:
-                    all_domains.extend(t["scores"].get("domain", {}).get("domains", []))
-                entry["all_domains"] = list(dict.fromkeys(all_domains))
+                    all_kw.extend(
+                        t["scores"].get("domain_breadth", {}).get("domain_keywords", [])
+                    )
+                entry["all_domain_keywords"] = list(dict.fromkeys(all_kw))
+            # 개념 오류 누적
+            if m == "conceptual_accuracy":
+                all_errors: list[str] = []
+                for t in self._turn_scores:
+                    err = t["scores"].get("conceptual_accuracy", {}).get("errors")
+                    if err:
+                        all_errors.append(err)
+                entry["all_errors"] = all_errors
             summary[m] = entry
 
         total_avgs = [t.get("total", 0) for t in self._turn_scores]
@@ -159,12 +168,6 @@ class ScoringAgent:
                     return "(없음)"
         return "(없음)"
 
-    def _collect_prior_domains(self) -> list[str]:
-        domains: list[str] = []
-        for t in self._turn_scores:
-            domains.extend(t.get("scores", {}).get("domain", {}).get("domains", []))
-        return list(dict.fromkeys(domains))
-
     # ── LLM 평가 ─────────────────────────────────────────────────
 
     def _evaluate(
@@ -174,10 +177,7 @@ class ScoringAgent:
         current_user_utterance: str,
         prev_ai_utterance: str,
         history_block: str,
-        prior_domains: list[str],
     ) -> dict:
-
-        prior_domains_str = ", ".join(prior_domains) if prior_domains else "없음"
 
         prompt = f"""당신은 시사 토론 평가 전문가입니다.
 아래 정보를 바탕으로 유저의 이번 턴 발언을 5가지 지표로 평가하세요.
@@ -194,18 +194,18 @@ class ScoringAgent:
 [이번 턴 유저 발언 — 평가 대상]
 {current_user_utterance}
 
-[전체 토론 기록 (도메인 파악용)]
+[전체 토론 기록]
 {history_block}
-
-[이전 턴들에서 이미 등장한 도메인]
-{prior_domains_str}
 
 ━━━ 평가 기준 (각 지표 1~5점) ━━━
 
 점수는 반드시 1~5 사이 정수만 사용하세요.
 1점과 5점은 극단적인 경우에만 부여하고, 대부분의 발언은 2~4점 사이로 평가하세요.
+각 기준은 독립적으로 평가하세요 (다른 기준 점수에 영향받지 않음).
 
 [1. 발언 구체성 specificity]
+정보의 정밀도를 측정한다.
+
 1점: 전부 "~인 것 같다", "~라고 들었다", "아마" 같은 불확실 표현만
 2점: 주장은 있지만 근거가 막연하고 수치·출처 없음
 3점: 일부 구체적 사례나 수치가 있으나 출처 불명확
@@ -213,46 +213,46 @@ class ScoringAgent:
 5점: 수치·사례·기관명·출처까지 명확하게 제시
 
 [2. 인과 연결 causality]
-1점: 사례 이름만 던짐
+사례를 단순 나열하는 데 그치지 않고, 원인-결과-함의를 연결해 이해하고 있는지 측정한다.
+
+1점: 사례 이름만 던짐, 설명 없음
 2점: 사례 + 결과만 서술, 원인 연결 없음
 3점: 사례 + 원인 또는 결과 중 하나만 연결
 4점: 사례 + 원인 + 결과 연결
 5점: 사례 + 원인 + 결과 + 자신의 주장과의 연결까지
 
-[3. 도메인 다양성 domain]
-이번 발언이 이전 턴들과 얼마나 다른 영역을 다루는지 평가.
+[3. 도메인 폭 domain_breadth]
+이 발언 하나에서 얼마나 다양한 영역을 넘나들며 논점을 구성하는지 측정한다.
 도메인 예시: 경제, 환경, 외교, 군사, 사회, 기술, 인권, 역사 등
-1점: 이전 턴과 완전히 같은 도메인·같은 논거 반복
-2점: 같은 도메인에서 거의 같은 각도
-3점: 같은 도메인이지만 새로운 각도나 세부 논점
-4점: 기존 도메인 + 새 도메인 1개 추가
-5점: 이전에 없던 새로운 도메인을 주도적으로 개척
 
-이번 발언에서 등장한 도메인 키워드도 함께 추출하세요 (1~3개).
+1점: 단일 도메인 안에서 같은 논거만 반복
+2점: 단일 도메인, 한 가지 각도만 사용
+3점: 단일 도메인이지만 두 가지 이상의 세부 논점을 구분해 사용
+4점: 두 개 도메인을 넘나들며 논점을 구성
+5점: 세 개 이상의 도메인을 연결해 복합적 논점을 구성
 
-[4. 정보 주도성 initiative]
-1점: AI 발언 그대로 재인용하거나 단순 동의/부정만
-2점: AI 발언에 반응하되 자신의 언어로 바꿔 말하는 수준
-3점: AI 발언에 반응하면서 새 사례나 수치 1개 추가
-4점: AI가 언급하지 않은 새로운 시사 사례나 관점을 꺼냄
-5점: AI가 다루지 않은 새로운 시사 이슈·주제를 유저가 먼저 도입
+domain_keywords 필드에 이번 발언에서 등장한 도메인 키워드를 1~3개 추출할 것.
 
-[5. 편향도 bias]
-아래 세 가지 편향 요소를 종합해 하나의 점수로 평가.
-점수가 높을수록 편향이 낮고 균형 잡힌 논증.
+[4. 정보 자립도 information_autonomy]
+발언자가 외부 발언에 기대지 않고 스스로 정보를 생산·구성하는 비율을 측정한다.
 
-  ① 통계 편향 (stat_bias): 자신에게 유리한 통계·사례만 골라 쓰고 불리한 데이터는 언급하지 않는지
-  ② 반례 무시 (counterarg): 상대방이 제시한 반례·반박을 무시하거나 화제를 돌려 회피하는지
-     - 이번 턴이 첫 번째 턴이거나 직전 AI 발언에 반례가 없으면 이 요소는 중립(감점 없음)으로 처리
-  ③ 감정 선동 (emotional_bias): 논리·근거 없이 공포·혐오·과장·동정 호소만으로 주장하는지
+1점: 타인의 말·자료를 그대로 재인용하거나 단순 동의·부정만
+2점: 외부 발언을 자신의 언어로 바꿔 말하는 수준 (재구성에 그침)
+3점: 외부 정보를 활용하되 자신의 사례·수치를 1개 이상 추가
+4점: 자신이 직접 수집·선택한 정보가 발언의 절반 이상을 구성
+5점: 발언 전체가 발언자 스스로 구성한 정보·논리로 이루어짐
 
-1점: 세 요소 모두 심각 — 유리한 수치만 인용, 반례 완전 무시, 감정 선동 위주
-2점: 두 요소 이상에서 편향이 뚜렷함
-3점: 일부 편향이 있으나 논리적 근거도 병행
-4점: 편향 요소가 경미하며 전반적으로 균형 잡힌 논증
-5점: 세 요소 모두 없음 — 유불리 통계 균형, 반례 성실히 수용, 감정 선동 없음
+[5. 개념 정확도 conceptual_accuracy]
+전문 용어, 고유명사, 제도·정책 명칭 등이 맥락에 맞게 쓰였는지 평가한다.
 
-details 필드에 각 요소별 한 줄 평을 작성하세요.
+1점: 핵심 개념을 명백히 잘못 사용하거나 혼동함
+2점: 개념을 대략적으로만 이해하고 부정확하게 사용
+3점: 개념을 대체로 올바르게 사용하나 일부 부정밀함
+4점: 개념을 정확하게 사용하며 맥락에도 적합함
+5점: 개념을 정확히 사용하고 그 개념의 한계나 세부 조건까지 인식
+
+전문 용어나 고유명사가 등장하지 않는 발언은 3점으로 처리한다.
+errors 필드에 오용된 개념이 있으면 해당 단어와 간단한 설명을 기재하고, 없으면 null로 처리한다.
 
 ━━━ 출력 형식 ━━━
 아래 JSON만 출력. 다른 텍스트 없이.
@@ -270,26 +270,22 @@ details 필드에 각 요소별 한 줄 평을 작성하세요.
       "reason": "점수 이유 1문장",
       "evidence": "발언에서 근거가 된 실제 문구 (없으면 빈 문자열)"
     }},
-    "domain": {{
+    "domain_breadth": {{
       "score": 1~5 정수,
       "reason": "점수 이유 1문장",
       "evidence": "발언에서 근거가 된 실제 문구 (없으면 빈 문자열)",
-      "domains": ["도메인1", "도메인2"]
+      "domain_keywords": ["도메인1", "도메인2"]
     }},
-    "initiative": {{
+    "information_autonomy": {{
       "score": 1~5 정수,
       "reason": "점수 이유 1문장",
       "evidence": "발언에서 근거가 된 실제 문구 (없으면 빈 문자열)"
     }},
-    "bias": {{
+    "conceptual_accuracy": {{
       "score": 1~5 정수,
-      "reason": "종합 점수 이유 1문장",
+      "reason": "점수 이유 1문장",
       "evidence": "발언에서 근거가 된 실제 문구 (없으면 빈 문자열)",
-      "details": {{
-        "stat_bias":      "유리한 통계만 사용했는지 한 줄 평",
-        "counterarg":     "반례를 무시했는지 한 줄 평",
-        "emotional_bias": "감정 선동에 의존했는지 한 줄 평"
-      }}
+      "errors": null
     }}
   }},
   "total": 위 5개 score 합계 정수
@@ -318,21 +314,17 @@ details 필드에 각 요소별 한 줄 평을 작성하세요.
         except Exception as e:
             print(f"  └─ [parse_result] JSON 파싱 실패: {e} | 원문: {raw[:300]}")
 
+        # fallback
         return {
             "turn": turn_number,
             "scores": {
-                "specificity": {"score": 1, "reason": "평가 실패", "evidence": ""},
-                "causality":   {"score": 1, "reason": "평가 실패", "evidence": ""},
-                "domain":      {"score": 1, "reason": "평가 실패", "evidence": "", "domains": []},
-                "initiative":  {"score": 1, "reason": "평가 실패", "evidence": ""},
-                "bias":        {
-                    "score": 1, "reason": "평가 실패", "evidence": "",
-                    "details": {
-                        "stat_bias":      "",
-                        "counterarg":     "",
-                        "emotional_bias": "",
-                    },
-                },
+                "specificity":          {"score": 1, "reason": "평가 실패", "evidence": ""},
+                "causality":            {"score": 1, "reason": "평가 실패", "evidence": ""},
+                "domain_breadth":       {"score": 1, "reason": "평가 실패", "evidence": "",
+                                         "domain_keywords": []},
+                "information_autonomy": {"score": 1, "reason": "평가 실패", "evidence": ""},
+                "conceptual_accuracy":  {"score": 1, "reason": "평가 실패", "evidence": "",
+                                         "errors": None},
             },
             "total": 5,
         }
