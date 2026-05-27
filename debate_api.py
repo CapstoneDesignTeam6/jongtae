@@ -5,8 +5,9 @@ debate_api.py — 토론 보조 AI 서버 API 호출 함수 모음
     pip install requests
 
 사용법:
-    from debate_api import get_intro, get_intro_quiz
+    from debate_api import get_intro, get_intro_quiz, evaluate_intro_quiz
     from debate_api import get_counter_hint, get_rebuttal_hint, get_summary
+    from debate_api import get_quiz, evaluate_quiz
     from debate_api import get_score_turn, get_score_final, reset_score
 
 주의:
@@ -67,7 +68,7 @@ def get_intro_quiz(
     summary: str,
 ) -> dict:
     """
-    배경 요약 기반 퀴즈 생성 (OX 3개 + 객관식 2개).
+    배경 요약 기반 사전 퀴즈 생성 (4지선다 최대 3개).
 
     Args:
         topic:   토론 주제
@@ -76,15 +77,58 @@ def get_intro_quiz(
     응답:
         {
             "quizzes": [
-                {"type": "ox",       "question": "...", "answer": true,  "explanation": "..."},
-                {"type": "multiple", "question": "...", "options": [...], "answer": 0, "explanation": "..."},
-                ...
-            ]
+                {
+                    "quiz_type":     "missing_variable" | "overgeneralization" | "counterargument",
+                    "type":          "reasoning",
+                    "question":      "...",
+                    "choices":       ["...다.", "...다.", "...다.", "...다."],
+                    "correct_index": 0~3,
+                    "explanation":   "..."
+                },
+                ...  (최대 3개)
+            ],
+            "selected_types": ["missing_variable", "overgeneralization", "counterargument"]
         }
     """
     res = requests.post(f"{BASE_URL}/intro/quiz", json={
         "topic":   topic,
         "summary": summary,
+    })
+    return res.json()
+
+
+def evaluate_intro_quiz(
+    quizzes: list[dict],
+    user_answers: list[int],
+) -> dict:
+    """
+    사전 퀴즈 답안 평가.
+
+    Args:
+        quizzes:      get_intro_quiz()["quizzes"] 배열 그대로
+        user_answers: 각 퀴즈에 대한 유저 선택 인덱스 리스트 (0~3)
+                      예) [0, 2, 1]
+
+    응답:
+        {
+            "results": [
+                {
+                    "quiz_type":     "missing_variable",
+                    "question":      "...",
+                    "user_index":    2,
+                    "correct_index": 1,
+                    "correct":       false,
+                    "explanation":   "..."
+                },
+                ...
+            ],
+            "total_score": 0~3,
+            "detail": { "missing_variable": false, "overgeneralization": true, ... }
+        }
+    """
+    res = requests.post(f"{BASE_URL}/intro/quiz/evaluate", json={
+        "quizzes":      quizzes,
+        "user_answers": user_answers,
     })
     return res.json()
 
@@ -166,7 +210,7 @@ def get_summary(
     return res.json()
 
 
-# ── 퀴즈 ──────────────────────────────────────────────────────────
+# ── 복습 퀴즈 ─────────────────────────────────────────────────────
 
 def get_quiz(
     topic: str,
@@ -174,22 +218,88 @@ def get_quiz(
     ai_label: str,
     history: list,
     news_data: list,
+    search_block: str = "",
 ) -> dict:
     """
-    퀴즈 생성 (토론 종료 후 호출).
+    토론 후 복습 퀴즈 생성 (4지선다 최대 3개).
+
+    Args:
+        topic:        토론 주제
+        user_label:   유저 입장 레이블
+        ai_label:     AI 입장 레이블
+        history:      전체 토론 기록
+        news_data:    누적 뉴스 배열
+        search_block: get_intro()["search_block"] 값 (선택. news_inference 유형에 활용)
 
     응답:
         {
-            "review_quiz":   { "question", "options", "answer", "explanation", "option_explanations" },
-            "weakness_quiz": { "question", "options", "answer", "explanation", "option_explanations" }
+            "quizzes": [
+                {
+                    "quiz_type":     "argument_core" | "argument_flaw" | "news_inference",
+                    "type":          "reasoning",
+                    "question":      "...",
+                    "choices":       ["...다.", "...다.", "...다.", "...다."],
+                    "correct_index": 0~3,
+                    "explanation":   "...",
+                    // news_inference 유형만 추가:
+                    "context_summary": "...",
+                    "gap_point":       "..."
+                },
+                ...  (최대 3개)
+            ],
+            "selected_types": ["argument_core", "argument_flaw", "news_inference"]
         }
+    실패 시: { "error": "퀴즈 생성 실패" }
     """
     res = requests.post(f"{BASE_URL}/quiz", json={
-        "topic":      topic,
-        "user_label": user_label,
-        "ai_label":   ai_label,
-        "history":    history,
-        "news_data":  news_data,
+        "topic":        topic,
+        "user_label":   user_label,
+        "ai_label":     ai_label,
+        "history":      history,
+        "news_data":    news_data,
+        "search_block": search_block,
+    })
+    return res.json()
+
+
+def evaluate_quiz(
+    quizzes: list[dict],
+    user_answers: list[int],
+    user_label: str = "찬성",
+    ai_label: str = "반대",
+) -> dict:
+    """
+    복습 퀴즈 답안 평가.
+
+    Args:
+        quizzes:      get_quiz()["quizzes"] 배열 그대로
+        user_answers: 각 퀴즈에 대한 유저 선택 인덱스 리스트 (0~3)
+                      예) [1, 0, 3]
+        user_label:   유저 입장 레이블 (선택)
+        ai_label:     AI 입장 레이블 (선택)
+
+    응답:
+        {
+            "results": [
+                {
+                    "quiz_type":     "argument_core",
+                    "question":      "...",
+                    "user_index":    1,
+                    "correct_index": 2,
+                    "correct":       false,
+                    "explanation":   "..."
+                },
+                ...
+            ],
+            "total_score": 0~3,
+            "detail": { "argument_core": true, "argument_flaw": false, ... }
+        }
+    """
+    res = requests.post(f"{BASE_URL}/quiz/evaluate", json={
+        "quizzes":      quizzes,
+        "user_answers": user_answers,
+        "user_label":   user_label,
+        "ai_label":     ai_label,
     })
     return res.json()
 
@@ -250,7 +360,8 @@ def get_score_final(session_key: str) -> dict:
                 "domain":      { ..., "all_domains": [...] },
                 "initiative":  { ... }
             },
-            "total_avg": float
+            "total_avg": float,
+            "overall_comment": "..."
         }
     """
     res = requests.post(f"{BASE_URL}/score/final", json={
@@ -267,36 +378,5 @@ def reset_score(session_key: str) -> dict:
     """
     res = requests.post(f"{BASE_URL}/score/reset", json={
         "session_key": session_key,
-    })
-    return res.json()
-
-
-def evaluate_intro_subjective(
-    topic: str,
-    summary: str,
-    qa_pairs: list[dict],
-) -> dict:
-    """
-    토론 전 주관식 답변 평가.
-    나중에 토론 후 퀴즈 점수와 비교해 이해도 증진 측정용.
-
-    Args:
-        topic:    토론 주제
-        summary:  get_intro()["summary"] 값
-        qa_pairs: [{"question": "질문", "answer": "유저 답변"}, ...]
-
-    응답:
-        {
-            "results": [
-                {"question": "...", "answer": "...", "score": 1~5, "reason": "..."},
-                ...
-            ],
-            "total_score": 2~10   ← 토론 후 퀴즈 점수와 비교용
-        }
-    """
-    res = requests.post(f"{BASE_URL}/intro/quiz/evaluate", json={
-        "topic":    topic,
-        "summary":  summary,
-        "qa_pairs": qa_pairs,
     })
     return res.json()
