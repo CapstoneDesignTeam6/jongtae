@@ -6,133 +6,115 @@ server.py — Flask API 서버
     python server.py
 
 엔드포인트:
-    GET  /health            서버 상태 확인
-    POST /intro             토론 주제 배경 정보 요약
-    POST /intro/quiz        배경 요약 기반 퀴즈 생성
-    POST /hint/counter      재반박 힌트 (AI 반박 직후)
-    POST /hint/rebuttal     반박 힌트   (AI 새 주장 직후)
-    POST /summarize         토론 정리 + 피드백
-    POST /quiz              퀴즈 생성
-    POST /score/turn        턴별 유저 발언 평가
-    POST /score/final       전체 턴 통계 집계
-    POST /score/reset       세션 초기화
+    GET  /health                서버 상태 확인
+    POST /intro                 토론 주제 배경 정보 요약
+    POST /intro/quiz            배경 요약 기반 사전 퀴즈 생성 (정답·해설 포함)
+    POST /hint/counter          재반박 힌트 (AI 반박 직후)
+    POST /hint/rebuttal         반박 힌트   (AI 새 주장 직후)
+    POST /summarize             토론 정리 + 피드백
+    POST /quiz                  토론 후 복습 퀴즈 생성 (정답·해설 포함)
+    POST /score/turn            턴별 유저 발언 평가
+    POST /score/final           전체 턴 통계 집계
+    POST /score/reset           세션 초기화
+
+※ evaluate 엔드포인트 없음 — 정답·해설을 퀴즈 생성 시 함께 전송하므로
+   클라이언트가 직접 채점합니다.
 """
 
 import socket
-
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 from debate_assistant import DebateAssistant
 from agents.intro_agent import IntroAgent
 from agents.intro_quiz_agent import IntroQuizAgent
+from agents.quiz_agent import ReviewQuizAgent
 from agents.scoring_agent import ScoringAgent
 
 app = Flask(__name__)
 CORS(app)
 
-# ── 싱글턴 에이전트 ───────────────────────────────────────────────
 _intro_agent      = IntroAgent()
 _intro_quiz_agent = IntroQuizAgent()
 _scoring_agents: dict[str, ScoringAgent] = {}
 
 
-# ── 공통 헬퍼 ────────────────────────────────────────────────────
+# ── 공통 헬퍼 ─────────────────────────────────────────────────────
 
-def _get_da(user_label: str, ai_label: str, news_data: list) -> DebateAssistant:
+def _get_da(user_label, ai_label, news_data):
     return DebateAssistant(evidence_items=news_data, user_label=user_label, ai_label=ai_label)
 
-
-def _get_scoring_agent(user_label: str, ai_label: str, session_key: str) -> ScoringAgent:
+def _get_scoring_agent(user_label, ai_label, session_key):
     if session_key not in _scoring_agents:
         _scoring_agents[session_key] = ScoringAgent(user_label=user_label, ai_label=ai_label)
     return _scoring_agents[session_key]
 
+def _parse_history(raw):
+    return [{"role": h["role"], "content": h["content"]}
+            for h in raw if h.get("role") in ("user", "ai") and h.get("content")]
 
-def _parse_history(raw: list) -> list[dict]:
-    result = []
-    for h in raw:
-        role    = h.get("role", "")
-        content = h.get("content", "")
-        if role in ("user", "ai") and content:
-            result.append({"role": role, "content": content})
-    return result
-
-
-def _require(data: dict, *keys) -> str | None:
-    """필수 필드 누락 시 에러 메시지 반환. 없으면 None."""
+def _require(data, *keys):
     for key in keys:
         if not data.get(key):
             return f"{key} 필드 필요"
     return None
 
-# server.py에 추가할 엔드포인트
-
-@app.route("/intro/quiz/evaluate", methods=["POST"])
-def intro_quiz_evaluate():
+def _format_quiz(q: dict) -> dict:
     """
-    주관식 답변 평가.
-
-    요청:
-    {
-        "topic":    "토론 주제",
-        "summary":  "IntroAgent가 생성한 배경 요약",
-        "qa_pairs": [
-            {"question": "질문1", "answer": "유저 답변1"},
-            {"question": "질문2", "answer": "유저 답변2"}
-        ]
-    }
-    응답:
-    {
-        "results": [
-            {"question": "...", "answer": "...", "score": 1~5, "reason": "..."},
-            ...
-        ],
-        "total_score": 2~10
-    }
+    퀴즈 하나를 클라이언트 전송용으로 정규화.
+    explanation을 파싱해 각 선지별 reason 배열로 분리.
     """
-    data = request.get_json()
-    if not data:
-        return jsonify({"error": "JSON body 필요"}), 400
-    if err := _require(data, "topic", "summary"):
-        return jsonify({"error": err}), 400
+    explanation = q.get("explanation", "")
+    choices     = q.get("choices", [])
 
-    qa_pairs = data.get("qa_pairs", [])
-    if not qa_pairs:
-        return jsonify({"error": "qa_pairs 필드 필요"}), 400
+    # (1)~(4) 패턴으로 선지별 해설 분리
+    import re
+    parts = re.split(r"\(([1-4])\)", explanation)
+    reasons = [""] * 4
+    for i in range(1, len(parts), 2):
+        idx = int(parts[i]) - 1
+        if 0 <= idx <= 3:
+            reasons[idx] = parts[i + 1].strip() if i + 1 < len(parts) else ""
 
-    try:
-        result = _intro_quiz_agent.evaluate_subjective(
-            topic    = data["topic"],
-            summary  = data["summary"],
-            qa_pairs = qa_pairs,
-        )
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    result = {
+        "quiz_type":     q.get("quiz_type"),
+        "type":          q.get("type", "reasoning"),
+        "question":      q.get("question"),
+        "choices":       choices,
+        "correct_index": q.get("correct_index"),
+        "explanation":   explanation,
+        "choice_reasons": reasons,   # 선지별 이유 [0]~[3]
+    }
 
-# ── 헬스체크 ─────────────────────────────────────────────────────
+    # news_inference 전용 추가 정보
+    if q.get("context_summary"):
+        result["context_summary"] = q["context_summary"]
+    if q.get("gap_point"):
+        result["gap_point"] = q["gap_point"]
+
+    return result
+
+
+# ── 헬스체크 ──────────────────────────────────────────────────────
 
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
 
 
-# ── 인트로 ───────────────────────────────────────────────────────
+# ── 인트로 ────────────────────────────────────────────────────────
 
 @app.route("/intro", methods=["POST"])
 def intro():
     """
     요청: { "topic": "...", "news_data": [...] }
     응답: { "summary": "...", "search_block": "..." }
-    news_data 있으면 Tavily 검색 스킵.
     """
     data = request.get_json()
     if not data:
         return jsonify({"error": "JSON body 필요"}), 400
     if err := _require(data, "topic"):
         return jsonify({"error": err}), 400
-
     try:
         result = _intro_agent.run(topic=data["topic"], news_data=data.get("news_data") or [])
         return jsonify({"summary": result["summary"], "search_block": result["search_block"]})
@@ -143,47 +125,59 @@ def intro():
 @app.route("/intro/quiz", methods=["POST"])
 def intro_quiz():
     """
+    사전 퀴즈 생성. 정답·해설·선지별 이유 포함.
+
     요청: { "topic": "...", "summary": "..." }
-    응답: { "quizzes": [ {OX 3개 + 객관식 2개} ] }
+    응답:
+    {
+        "quizzes": [
+            {
+                "quiz_type":      "missing_variable" | "overgeneralization" | "counterargument",
+                "type":           "reasoning",
+                "question":       "...",
+                "choices":        ["...다.", "...다.", "...다.", "...다."],
+                "correct_index":  0~3,
+                "explanation":    "전체 해설 텍스트",
+                "choice_reasons": ["①이유", "②이유", "③이유", "④이유"]
+            },
+            ...
+        ],
+        "selected_types": [...]
+    }
     """
     data = request.get_json()
     if not data:
         return jsonify({"error": "JSON body 필요"}), 400
     if err := _require(data, "topic", "summary"):
         return jsonify({"error": err}), 400
-
     try:
         result = _intro_quiz_agent.run(topic=data["topic"], summary=data["summary"])
+        result["quizzes"] = [_format_quiz(q) for q in result["quizzes"]]
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-# ── 힌트 ─────────────────────────────────────────────────────────
+# ── 힌트 ──────────────────────────────────────────────────────────
 
-def _hint_common(mode: str) -> tuple:
-    """counter / rebuttal 공통 처리."""
+def _hint_common(mode):
     data = request.get_json()
     if not data:
         return None, (jsonify({"error": "JSON body 필요"}), 400)
     if err := _require(data, "topic", "user_label", "ai_label"):
         return None, (jsonify({"error": err}), 400)
-
     history   = _parse_history(data.get("history", []))
     news_data = data.get("news_data", [])
     if not history:
         return None, (jsonify({"error": "history 필드 필요"}), 400)
     if not news_data:
         return None, (jsonify({"error": "news_data 필드 필요"}), 400)
-
     da = _get_da(data["user_label"], data["ai_label"], news_data)
     fn = da.counter_hint if mode == "counter" else da.rebuttal_hint
     return fn, (history, data["topic"])
 
-
 @app.route("/hint/counter", methods=["POST"])
 def hint_counter():
-    """재반박 힌트 (AI 반박 직후). 응답: { "hint": "..." }"""
     fn, args = _hint_common("counter")
     if fn is None:
         return args
@@ -193,10 +187,8 @@ def hint_counter():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route("/hint/rebuttal", methods=["POST"])
 def hint_rebuttal():
-    """반박 힌트 (AI 새 주장 직후). 응답: { "hint": "..." }"""
     fn, args = _hint_common("rebuttal")
     if fn is None:
         return args
@@ -207,27 +199,21 @@ def hint_rebuttal():
         return jsonify({"error": str(e)}), 500
 
 
-# ── 요약 ─────────────────────────────────────────────────────────
+# ── 요약 ──────────────────────────────────────────────────────────
 
 @app.route("/summarize", methods=["POST"])
 def summarize():
-    """
-    요청: { "topic", "user_label", "ai_label", "history", "news_data" }
-    응답: { "summary", "logic_feedback", "extra_info" }
-    """
     data = request.get_json()
     if not data:
         return jsonify({"error": "JSON body 필요"}), 400
     if err := _require(data, "topic", "user_label", "ai_label"):
         return jsonify({"error": err}), 400
-
     history   = _parse_history(data.get("history", []))
     news_data = data.get("news_data", [])
     if not history:
         return jsonify({"error": "history 필드 필요"}), 400
     if not news_data:
         return jsonify({"error": "news_data 필드 필요"}), 400
-
     try:
         result = _get_da(data["user_label"], data["ai_label"], news_data).summarize(history, data["topic"])
         return jsonify({
@@ -239,128 +225,121 @@ def summarize():
         return jsonify({"error": str(e)}), 500
 
 
-# ── 퀴즈 ─────────────────────────────────────────────────────────
+# ── 복습 퀴즈 ─────────────────────────────────────────────────────
 
 @app.route("/quiz", methods=["POST"])
 def quiz():
     """
-    요청: { "topic", "user_label", "ai_label", "history", "news_data" }
-    응답: { "review_quiz": {...}, "weakness_quiz": {...} }
+    토론 후 복습 퀴즈 생성. 정답·해설·선지별 이유 포함.
+    news_inference 유형은 context_summary(추가 정보)도 함께 전송.
+
+    요청:
+    {
+        "topic":        "...",
+        "user_label":   "...",
+        "ai_label":     "...",
+        "history":      [...],
+        "news_data":    [...],
+        "search_block": "..."  ← 선택
+    }
+    응답:
+    {
+        "quizzes": [
+            {
+                "quiz_type":      "argument_core" | "argument_flaw" | "news_inference",
+                "type":           "reasoning",
+                "question":       "...",
+                "choices":        ["...다.", "...다.", "...다.", "...다."],
+                "correct_index":  0~3,
+                "explanation":    "전체 해설 텍스트",
+                "choice_reasons": ["①이유", "②이유", "③이유", "④이유"],
+                // news_inference만 추가:
+                "context_summary": "추가 정보 요약",
+                "gap_point":       "찾은 미검증 부분"
+            },
+            ...
+        ],
+        "selected_types": [...]
+    }
     """
     data = request.get_json()
     if not data:
         return jsonify({"error": "JSON body 필요"}), 400
     if err := _require(data, "topic", "user_label", "ai_label"):
         return jsonify({"error": err}), 400
-
     history   = _parse_history(data.get("history", []))
     news_data = data.get("news_data", [])
     if not history:
         return jsonify({"error": "history 필드 필요"}), 400
     if not news_data:
         return jsonify({"error": "news_data 필드 필요"}), 400
-
     try:
-        result = _get_da(data["user_label"], data["ai_label"], news_data).quiz(history, data["topic"])
+        agent = ReviewQuizAgent(
+            evidence_items=news_data,
+            user_label=data["user_label"],
+            ai_label=data["ai_label"],
+        )
+        result = agent.generate(
+            history=history,
+            topic=data["topic"],
+            search_block=data.get("search_block", ""),
+        )
+        if result is None:
+            return jsonify({"error": "퀴즈 생성 실패"}), 500
+        result["quizzes"] = [_format_quiz(q) for q in result["quizzes"]]
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-# ── 평가 ─────────────────────────────────────────────────────────
-# server.py — /score/turn 엔드포인트만 수정 (나머지 동일)
+# ── 평가 ──────────────────────────────────────────────────────────
 
 @app.route("/score/turn", methods=["POST"])
 def score_turn():
-    """
-    턴 종료 직후 호출. turn_number는 서버가 자동 계산.
-
-    요청: { "topic", "user_label", "ai_label", "session_key", "history" }
-    응답: {
-        "turn": 1,
-        "scores": {
-            "specificity": { "score": 1~5, "reason": "...", "evidence": "..." },
-            "causality":   { "score": 1~5, "reason": "...", "evidence": "..." },
-            "domain":      { "score": 1~5, "reason": "...", "evidence": "...", "domains": [...] },
-            "initiative":  { "score": 1~5, "reason": "...", "evidence": "..." }
-        },
-        "total": 4~20
-    }
-    """
     data = request.get_json()
     if not data:
         return jsonify({"error": "JSON body 필요"}), 400
     if err := _require(data, "topic", "user_label", "ai_label"):
         return jsonify({"error": err}), 400
-
     history = _parse_history(data.get("history", []))
     if not history:
         return jsonify({"error": "history 필드 필요"}), 400
-
     session_key = data.get("session_key") or f"{data['topic']}_{data['user_label']}"
-
     try:
         agent  = _get_scoring_agent(data["user_label"], data["ai_label"], session_key)
-        result = agent.score_turn(history=history, topic=data["topic"])  # turn_number 제거
+        result = agent.score_turn(history=history, topic=data["topic"])
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/score/final", methods=["POST"])
 def score_final():
-    """
-    토론 종료 후 호출. 전체 턴 통계 집계. /score/turn을 먼저 호출해야 함.
-
-    요청: { "session_key": "..." }
-    응답: {
-        "turns": [...],
-        "summary": {
-            "specificity": { "avg": float, "trend": "상승"|"하락"|"유지", "scores_per_turn": [...] },
-            "causality":   { ... },
-            "domain":      { ..., "all_domains": [...] },
-            "initiative":  { ... }
-        },
-        "total_avg": float,
-        "overall_comment": "..."
-    }
-    """
     data = request.get_json()
     if not data:
         return jsonify({"error": "JSON body 필요"}), 400
     if err := _require(data, "session_key"):
         return jsonify({"error": err}), 400
-
     session_key = data["session_key"]
     if session_key not in _scoring_agents:
-        return jsonify({"error": f"'{session_key}' 평가 기록 없음. /score/turn을 먼저 호출하세요."}), 404
-
+        return jsonify({"error": f"'{session_key}' 평가 기록 없음"}), 404
     try:
         result = _scoring_agents.pop(session_key).score_final()
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route("/score/reset", methods=["POST"])
 def score_reset():
-    """
-    새 토론 시작 시 기존 세션 초기화.
-
-    요청: { "session_key": "..." }
-    응답: { "status": "ok", "message": "..." }
-    """
     data = request.get_json()
     if not data:
         return jsonify({"error": "JSON body 필요"}), 400
     if err := _require(data, "session_key"):
         return jsonify({"error": err}), 400
-
-    session_key = data["session_key"]
-    _scoring_agents.pop(session_key, None)
-    return jsonify({"status": "ok", "message": f"'{session_key}' 초기화 완료"})
+    _scoring_agents.pop(data["session_key"], None)
+    return jsonify({"status": "ok", "message": f"'{data['session_key']}' 초기화 완료"})
 
 
-# ── 서버 시작 ────────────────────────────────────────────────────
+# ── 서버 시작 ─────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     hostname = socket.gethostname()
