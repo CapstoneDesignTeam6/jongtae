@@ -109,8 +109,7 @@ def get_summary(
     응답:
         {
             "summary":        "토론 요약",
-            "logic_feedback": "논리 피드백",
-            "extra_info":     "추가 사례"
+            "logic_feedback": "논리 피드백"
         }
     """
     return requests.post(f"{BASE_URL}/summarize", json={
