@@ -219,7 +219,6 @@ def summarize():
         return jsonify({
             "summary":        result["summary"],
             "logic_feedback": result["logic_feedback"],
-            "extra_info":     result["extra_info"],
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
