@@ -3,7 +3,7 @@ agents/quiz_agent.py — 토론 후 복습 퀴즈 (4지선다 3개)
 
 ReviewQuizAgent: 토론에서 실제 오간 논증·반론·인과관계를 얼마나 이해했는지 측정
   - 사전 퀴즈(intro_quiz_agent)와 동일한 구조, 동일한 파싱/정규화 재사용
-  - 유형 3가지: argument_core / logic_gap / rebuttal_target
+  - 유형 3가지: argument_core / argument_flaw / news_inference
   - 토론 history + evidence 기반 → 배경지식이 아닌 "이 토론에서 오간 내용" 기반 출제
 
 응답 형식:
@@ -19,18 +19,19 @@ ReviewQuizAgent: 토론에서 실제 오간 논증·반론·인과관계를 얼�
             },
             ...
         ],
-        "selected_types": ["argument_core", "logic_gap", "rebuttal_target"]
+        "selected_types": ["argument_core", "argument_flaw", "news_inference"]
     }
 
 평가 응답 형식:
     {
         "results": [...],
         "total_score": 0~3,
-        "detail": {"argument_core": True, "logic_gap": False, ...}
+        "detail": {"argument_core": True, "argument_flaw": False, ...}
     }
 """
 
 import json
+import random
 import re
 
 from data.evidence import build_evidence_block, build_history_block
@@ -59,10 +60,8 @@ def _tavily_search(query: str, max_results: int = 5, max_chars: int = 2000) -> s
             if not isinstance(r, dict):
                 continue
             url = r.get("url", "").strip()
-            # 도메인 추출
             domain_match = _re.search(r"https?://(?:www\.)?([^/]+)", url)
             domain = domain_match.group(1) if domain_match else ""
-            # 비신뢰 도메인 스킵
             if any(d in domain for d in _UNTRUSTED_DOMAINS):
                 continue
             title = r.get("title", "").strip()
@@ -77,7 +76,12 @@ def _tavily_search(query: str, max_results: int = 5, max_chars: int = 2000) -> s
         print(f"    [Tavily] 검색 실패: {e}")
         return ""
 
-GENERATE_TOKENS = 2000
+GENERATE_TOKENS  = 1200
+NEWS_STEP_TOKENS = 2000
+STEP1_TOKENS     = 400
+STEP2_TOKENS     = 500
+RELEVANCE_TOKENS = 10
+REQUERY_TOKENS   = 30
 MAX_RETRIES = 2
 
 
@@ -92,13 +96,17 @@ def _call_llm(prompt: str, max_tokens: int = GENERATE_TOKENS) -> str:
 # ──────────────────────────────────────────────────────────────────
 # 퀴즈 유형 정의
 # ──────────────────────────────────────────────────────────────────
-# 사전 퀴즈: 배경지식 추론 (주제를 얼마나 아는가)
-# 사후 퀴즈: 토론 이해도 (이 토론에서 오간 논증을 얼마나 이해했는가)
 
 QUIZ_TYPES: dict[str, dict] = {
     "argument_core": {
         "name": "논거의 숨은 전제 추론",
         "measure": "토론에서 제시된 논거가 성립하려면 반드시 참이어야 하는 숨은 전제를 찾는 능력",
+        "question_guide": (
+            "토론에서 제시된 논거 하나를 자연스럽게 제시하고, "
+            "그 논거가 설득력을 가지려면 어떤 가정이 있어야 하는지 묻는 질문을 써라.\n"
+            "좋은 예) '토론에서 A가 B를 주장했을 때, 이 주장이 성립하려면 전제되어야 할 것은?'\n"
+            "나쁜 예) '이 논거의 숨은 전제는 무엇인가?' — 이런 메타 표현 절대 금지"
+        ),
         "correct_criteria": (
             "이 논거가 설득력을 가지려면 반드시 받아들여야 하는 숨은 전제. "
             "이 전제가 흔들리면 논거 전체가 무너진다. "
@@ -116,6 +124,12 @@ QUIZ_TYPES: dict[str, dict] = {
     "argument_flaw": {
         "name": "논증 약점 찾기",
         "measure": "토론에서 제시된 주장이나 반박에 어떤 논리적 문제가 있는지 찾는 능력",
+        "question_guide": (
+            "토론에서 제시된 특정 주장이나 반박을 자연스럽게 인용하고, "
+            "그 논리에서 가장 취약한 부분이 무엇인지 묻는 질문을 써라.\n"
+            "좋은 예) '토론에서 A가 B라고 주장했을 때, 이 주장에서 가장 취약한 부분은?'\n"
+            "나쁜 예) '이 주장의 논리적 오류는?' — 이런 메타 표현 절대 금지"
+        ),
         "correct_criteria": (
             "이 주장 또는 반박이 가진 가장 치명적인 논리적 약점. "
             "전제가 과도하게 단순화되었거나, 인과관계가 성립하지 않거나, "
@@ -132,6 +146,12 @@ QUIZ_TYPES: dict[str, dict] = {
     "news_inference": {
         "name": "추가 정보 기반 심화 추론",
         "measure": "토론의 핵심 주장을 실제 뉴스/데이터와 연결해 더 깊이 사고하는 능력",
+        "question_guide": (
+            "토론에서 제기된 특정 주장을 실제 데이터/뉴스와 연결해, "
+            "그 정보를 바탕으로 어떤 판단이 가장 타당한지 묻는 자연스러운 질문을 써라.\n"
+            "좋은 예) '토론에서 A가 B라고 주장했는데, 실제 데이터를 보면 이 주장을 어떻게 평가할 수 있는가?'\n"
+            "나쁜 예) '추가 정보 기반으로 추론하면?' — 이런 메타 표현 절대 금지"
+        ),
         "correct_criteria": (
             "토론에서 제기된 주장 또는 반박을 실제 뉴스/데이터와 연결했을 때 "
             "가장 타당하게 도출되는 추론이나 판단. "
@@ -173,31 +193,53 @@ class ReviewQuizAgent:
         topic: str,
         types: list[str] | None = None,
         search_block: str = "",
+        debate_summary: str = "",
     ) -> dict | None:
-        """
-        Args:
-            search_block: IntroAgent가 생성한 뉴스 검색 블록 (news_inference 유형에 사용)
-        Returns:
-            {"quizzes": [...], "selected_types": [...]}
-        """
         selected = types if types is not None else list(DEFAULT_TYPES)
         _validate_types(selected)
 
-        history_block = build_history_block(history)
+        history_block  = build_history_block(history)
         evidence_block = build_evidence_block(self.evidence, max_chars=2000)
+        context_block = debate_summary if debate_summary else history_block
 
         print(f"\n[ReviewQuizAgent] 주제: {topic}")
         print(f"  유형: {[QUIZ_TYPES[t]['name'] for t in selected]}")
+        if debate_summary:
+            print(f"  Q1/Q2: 토론 요약본 사용 ({len(debate_summary)}자) | Q3: 원문 사용")
 
-        quizzes = []
-        for qtype in selected:
-            quiz = self._make_one(topic, history_block, evidence_block, qtype, search_block)
-            if quiz:
-                quizzes.append(quiz)
-                print(f"  [{QUIZ_TYPES[qtype]['name']}] 완료")
-            else:
-                print(f"  [{QUIZ_TYPES[qtype]['name']}] 실패 - 건너뜀")
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
+        parallel_types = [qt for qt in selected if qt != 'news_inference']
+        news_types     = [qt for qt in selected if qt == 'news_inference']
+
+        quizzes_map: dict[str, dict | None] = {}
+
+        if parallel_types:
+            with ThreadPoolExecutor(max_workers=len(parallel_types)) as ex:
+                future_to_type = {
+                    ex.submit(
+                        self._make_one, topic, context_block,
+                        evidence_block, qt, search_block
+                    ): qt for qt in parallel_types
+                }
+                for future in as_completed(future_to_type):
+                    qt   = future_to_type[future]
+                    name = QUIZ_TYPES[qt]['name']
+                    try:
+                        quizzes_map[qt] = future.result()
+                        status = '완료' if quizzes_map[qt] else '실패 - 건너뜀'
+                        print(f"  [{name}] {status}")
+                    except Exception as e:
+                        quizzes_map[qt] = None
+                        print(f"  [{name}] 오류: {e}")
+
+        for qt in news_types:
+            name = QUIZ_TYPES[qt]['name']
+            quiz = self._make_one(topic, history_block, evidence_block, qt, search_block)
+            quizzes_map[qt] = quiz
+            print(f"  [{name}] {'완료' if quiz else '실패 - 건너뜀'}")
+
+        quizzes = [quizzes_map[qt] for qt in selected if quizzes_map.get(qt)]
         print(f"  최종 퀴즈: {len(quizzes)}개")
         return {"quizzes": quizzes, "selected_types": selected} if quizzes else None
 
@@ -236,7 +278,6 @@ class ReviewQuizAgent:
     ) -> dict | None:
         meta = QUIZ_TYPES[qtype]
 
-        # news_inference는 별도 3단계 흐름
         if qtype == "news_inference":
             return self._make_news_inference(topic, history_block, meta, self.user_label, self.ai_label)
 
@@ -270,7 +311,7 @@ class ReviewQuizAgent:
           Step 2: Tavily 검색 → 3~4줄 한국어 요약
           Step 3: 그 발화 + 요약 데이터로만 판단하는 퀴즈 생성
         """
-        # ── Step 1: 특정 발화 + 미검증 부분 + 검색 쿼리 ───────────
+        # ── Step 1 ───────────────────────────────────────────────
         step1_prompt = "\n".join([
             "아래 토론 기록을 읽고, 다음 순서로 분석해라.",
             "",
@@ -296,10 +337,9 @@ class ReviewQuizAgent:
             "미검증부분: [이 발화에서 수치/사실이 없는 부분 한 줄]",
             "검색쿼리: [영어 검색 쿼리]",
         ])
-        step1_raw = _call_llm(step1_prompt, max_tokens=400)
+        step1_raw = _call_llm(step1_prompt, max_tokens=STEP1_TOKENS)
         print(f"    [Step1] {step1_raw[:100]}")
 
-        # 파싱
         speaker = selected_claim = context_of_claim = gap = query = ""
         for line in step1_raw.splitlines():
             if line.startswith("화자:"):
@@ -318,8 +358,7 @@ class ReviewQuizAgent:
         if not query:
             query = topic[:50]
 
-        # ── Step 2: Tavily 검색 → 관련성 확인 → 요약 ────────────
-        # 쿼리가 너무 광범위하면 발화와 무관한 결과가 나오므로 재시도 포함
+        # ── Step 2 ───────────────────────────────────────────────
         context_summary = ""
         for search_attempt in range(1, 3):
             raw_search = _tavily_search(query)
@@ -327,7 +366,6 @@ class ReviewQuizAgent:
                 print(f"    [Step2] 검색 결과 없음 (시도 {search_attempt})")
                 break
 
-            # 검색 결과가 발화와 관련 있는지 LLM으로 확인
             relevance_prompt = "\n".join([
                 "아래 검색 결과가 주어진 발화의 미검증 부분을 보완하는 데 유용한 수치나 사실을 담고 있는가?",
                 "유용하면 YES, 무관하거나 발화와 다른 주제면 NO로만 답해라.",
@@ -340,11 +378,10 @@ class ReviewQuizAgent:
                 "",
                 "판단 (YES 또는 NO):",
             ])
-            relevance = _call_llm(relevance_prompt, max_tokens=10).strip().upper()
+            relevance = _call_llm(relevance_prompt, max_tokens=RELEVANCE_TOKENS).strip().upper()
             print(f"    [Step2] 관련성 판단: {relevance} (쿼리: {query})")
 
             if "NO" in relevance:
-                # 쿼리를 발화 핵심어 기반으로 재생성
                 requery_prompt = "\n".join([
                     "아래 발화의 미검증 부분을 직접 검색할 수 있는 영어 쿼리를 1개만 만들어라.",
                     "쿼리는 구체적인 수치나 통계를 찾을 수 있어야 한다. 5단어 이내.",
@@ -353,11 +390,10 @@ class ReviewQuizAgent:
                     f"[발화] {selected_claim}",
                     f"[미검증 부분] {gap}",
                 ])
-                query = _call_llm(requery_prompt, max_tokens=30).strip().strip('"').strip("'")
+                query = _call_llm(requery_prompt, max_tokens=REQUERY_TOKENS).strip().strip('"').strip("'")
                 print(f"    [Step2] 쿼리 재생성: {query}")
                 continue
 
-            # 관련성 있음 → 요약
             sum_prompt = "\n".join([
                 "아래 검색 결과에서 발화의 미검증 부분을 보완하는 사실/수치만 골라",
                 "한국어로 4~5줄 이내로 요약해라. 수치와 출처를 충분히 담을 것.",
@@ -381,7 +417,7 @@ class ReviewQuizAgent:
                 "",
                 "요약:",
             ])
-            context_summary = _call_llm(sum_prompt, max_tokens=500).strip()
+            context_summary = _call_llm(sum_prompt, max_tokens=STEP2_TOKENS).strip()
             lines = [l.strip() for l in context_summary.splitlines() if l.strip()]
             context_summary = " ".join(lines)[:600]
             break
@@ -391,8 +427,10 @@ class ReviewQuizAgent:
 
         print(f"    [Step2] 요약: {context_summary[:80]}")
 
-        # ── Step 3: 선택 발화 + 추가 정보 기반 퀴즈 생성 ──────────
+        # ── Step 3 ───────────────────────────────────────────────
         for attempt in range(1, MAX_RETRIES + 2):
+            correct_hint = random.randint(0, 3)
+
             quiz_prompt = "\n".join([
                 "당신은 토론 이해도 평가 전문가입니다.",
                 "아래 토론의 특정 발화와 추가 정보를 함께 사용해 4지선다 퀴즈를 만드세요.",
@@ -405,21 +443,17 @@ class ReviewQuizAgent:
                 "[이 발화의 미검증 부분을 보완하는 추가 정보]",
                 context_summary,
                 "",
-                "[출제 규칙]",
+                "[질문 작성 규칙]",
                 "- 질문은 반드시 한 문장으로 작성할 것",
                 f"- 포함 요소: [{context_of_claim}]라는 맥락에서 {speaker}가 [{selected_claim}]라고 주장했을 때, 추가 정보를 바탕으로 이 주장을 평가한 것으로 가장 적절한 것은?",
                 "- 위 내용을 자연스러운 한 문장으로 압축할 것. 줄바꿈·번호 금지",
                 "- 화자 표기: 반드시 '유저' 또는 'AI'로만. '찬성 측', '반대 측' 절대 금지",
+                "- 절대 금지 표현: '추가 정보 기반', '심화 추론', '추론하면' 등 메타 언어를 질문에 직접 쓰지 말 것",
                 "",
                 "[선지 설계 원칙]",
                 "- 선지는 추가 정보를 그대로 확인하는 것이 아닌 추론·판단을 요구해야 함",
-                "  추가 정보만 읽으면 바로 풀리는 선지는 실패",
-                "  추가 정보 + 토론 맥락을 함께 고려해야 정답이 보여야 함",
-                "",
-                "- 선지 설계 핵심 원칙:",
-                "  모든 선지(정답 포함)는 추가 정보에서 제시된 사실/상황을 토론 맥락에 적용해 판단하는 구조여야 한다",
-                "  추가 정보를 단순히 요약하거나 수치를 나열하는 선지는 실패",
-                "  '추가 정보가 이 상황에서 의미하는 바가 무엇인가'를 판단해야 풀리는 선지여야 한다",
+                "- 추가 정보 + 토론 맥락을 함께 고려해야 정답이 보여야 함",
+                "- 모든 선지(정답 포함)는 추가 정보에서 제시된 사실/상황을 토론 맥락에 적용해 판단하는 구조여야 한다",
                 "",
                 "- 정답: 추가 정보의 사실/상황을 토론의 핵심 발화와 연결했을 때 가장 타당하게 도출되는 판단",
                 "  한 문장, 간결하게",
@@ -428,11 +462,10 @@ class ReviewQuizAgent:
                 "  (A) 추가 정보의 사실은 맞게 이해했지만 발화의 맥락과 연결이 어긋난 판단",
                 "  (B) 추가 정보가 시사하는 방향을 반대로 적용한 판단",
                 "  (C) 추가 정보와 발화 모두 부분적으로만 고려해 전체를 왜곡한 판단",
-                "  오답도 '추가 정보를 보면 이게 맞는 것 같은데?' 싶어야 함. 쉽게 걸리면 실패",
                 "",
                 "[형식]",
                 "- 선지: ...다. 로 끝나는 평서형",
-                "- correct_index: 0부터 시작, 매번 다르게 섞을 것",
+                f"- 정답은 반드시 인덱스 {correct_hint} 위치(0부터 시작)에 배치할 것.",
                 "- explanation: 정확히 4문장. (1)(2)(3)(4) 기호 사용.",
                 "  각 문장에서 추가 정보의 수치를 언급하며 왜 맞고 틀린지 설명.",
                 "",
@@ -442,18 +475,18 @@ class ReviewQuizAgent:
                 '  "type": "reasoning",',
                 '  "question": "질문?",',
                 '  "choices": ["선지A다.", "선지B다.", "선지C다.", "선지D다."],',
-                '  "correct_index": 0,',
+                f'  "correct_index": {correct_hint},',
                 '  "explanation": "(1)은 ... (2)는 ... (3)은 ... (4)는 ..."',
                 "}",
             ])
 
-            raw = _call_llm(quiz_prompt)
+            raw = _call_llm(quiz_prompt, max_tokens=NEWS_STEP_TOKENS)
             if not raw or "[ERROR]" in raw:
                 continue
 
             quiz = _parse_single_quiz(raw, "news_inference")
             if quiz:
-                quiz["context_summary"] = context_summary  # 화면 표시용
+                quiz["context_summary"] = context_summary
                 quiz["gap_point"] = gap
                 return quiz
 
@@ -476,7 +509,9 @@ def _build_prompt(
     ai_label: str,
     search_block: str = "",
 ) -> str:
-    # news_inference 유형: 뉴스 블록을 핵심 입력으로 사용
+    # 정답 위치를 매 호출마다 랜덤 지정 → 쏠림 방지
+    correct_hint = random.randint(0, 3)
+
     is_news = qtype == "news_inference"
 
     if is_news:
@@ -487,67 +522,69 @@ def _build_prompt(
             "[news_inference 유형 출제 규칙]",
             "- 토론에서 제기된 주장 하나를 골라, 위 뉴스/데이터와 연결해서 질문을 만들어라",
             "- 토론 내용만 알아도 풀리면 안 된다 — 뉴스 정보까지 함께 고려해야 정답이 보여야 한다",
-            "- 질문은 '이 정보를 보면 ~에 대해 어떻게 판단해야 하는가?' 형태가 좋다",
             "",
         ]
     else:
         news_section = []
 
     lines = [
-        "당신은 토론 이해도 평가 전문가입니다.",
-        "아래 토론 기록을 꼼꼼히 읽고, 지정된 유형의 4지선다 퀴즈를 하나 만드세요.",
+        "You are a debate comprehension assessment expert.",
+        "Read the debate history carefully and create one 4-choice quiz of the specified type.",
         "",
-        "토론 주제: " + topic,
-        "토론 참여자: 유저=" + user_label + " / AI=" + ai_label,
-        "★ 발화자 표기 규칙 (질문·선지·해설 모두 적용):",
-        "  반드시 '유저' 또는 'AI'로만 표기. '찬성 측', '반대 측', '찬성', '반대' 표현 절대 금지",
+        "Topic: " + topic,
+        "Participants: user=" + user_label + " / AI=" + ai_label,
+        "Speaker labeling rule: use 'user' or 'AI' only. Never use role labels like 'pro side'/'con side'.",
         "",
-        "[토론 기록]",
+        "[Debate history]",
         history_block,
         "",
-        "[참고 자료 - 보조용]",
+        "[Reference material - supplementary]",
         evidence_block,
         "",
     ] + news_section + [
-        "퀴즈 유형: " + meta["name"] + " - " + meta["measure"],
+        "Quiz type: " + meta["name"] + " - " + meta["measure"],
         "",
-        "[질문 작성 규칙]",
-        "- 토론에서 실제로 오간 주장/반론/근거를 기반으로 한 질문",
-        "- 한 문장, 명확하게",
+        "[Question writing rules]",
+        "- Base the question on actual claims/rebuttals/evidence from the debate",
+        "- One sentence, clear and natural",
+        "- FORBIDDEN expressions in question: '숨은 전제', '논리적 오류', '추론 능력', '약점 찾기'",
+        "  Do not use meta-language that describes the quiz type. Write naturally.",
+        "- Question guide: " + meta["question_guide"],
         "",
-        "[정답 기준]",
+        "[Correct answer criteria]",
         meta["correct_criteria"],
         "",
-        "[오답 설계 - 가장 중요]",
+        "[Distractor design - most important]",
         meta["distractor_criteria"],
         "",
-        "[핵심 요구사항]",
-        "- 4개 선지 모두 이 토론을 들은 사람에게 그럴듯하게 들려야 한다",
-        "- 정답은 추론 끝에 납득되어야 하고, 오답은 '이것도 맞는 것 같은데?' 싶어야 한다",
+        "[Key requirements]",
+        "- All 4 choices must seem plausible to someone who heard this debate",
+        "- Correct answer should be convincing after reasoning; wrong answers should feel almost right",
         "",
-        "[형식]",
-        "- 모든 선지: ...다. 또는 ...된다. 로 끝나는 평서형",
-        "- correct_index: choices 배열 0부터 시작 (정답 위치를 매번 다르게 섞을 것)",
-        "- explanation: 정확히 4문장. (1)(2)(3)(4) 기호 사용.",
-        "  정답 문장 예시: (1)은 토론 내용과 뉴스 데이터를 함께 고려할 때 가장 타당한 추론이므로 정답이다.",
-        "  오답 문장 예시: (2)는 그럴듯하지만 뉴스 데이터와 충돌하므로 오답이다.",
+        "[Format]",
+        "- Write ALL choices, question, and explanation IN KOREAN",
+        "- Choices: declarative Korean sentences ending in '...다.'",
+        f"- The correct answer MUST be placed at index {correct_hint} (0-based). Arrange choices accordingly.",
+        "- explanation: exactly 4 sentences using (1)(2)(3)(4) markers.",
+        f"  ({correct_hint + 1}) is correct because ...",
+        "  Other choices: explain why each seems plausible but is wrong.",
         "",
-        "JSON만 출력. 백틱/마크다운 금지. 다른 말 금지.",
+        "Output ONLY valid JSON. No markdown, no extra text.",
         "",
         "{",
         '  "quiz_type": "' + qtype + '",',
         '  "type": "reasoning",',
-        '  "question": "질문 텍스트?",',
-        '  "choices": ["선지A다.", "선지B다.", "선지C다.", "선지D다."],',
-        '  "correct_index": 0,',
-        '  "explanation": "(1)은 ... (2)는 ... (3)은 ... (4)는 ..."',
+        '  "question": "Korean question?",',
+        '  "choices": ["Korean choice A.", "Korean choice B.", "Korean choice C.", "Korean choice D."],',
+        f'  "correct_index": {correct_hint},',
+        '  "explanation": "(1)... (2)... (3)... (4)..."',
         "}",
     ]
     return "\n".join(lines)
 
 
 # ──────────────────────────────────────────────────────────────────
-# 파싱 & 정규화 (intro_quiz_agent와 동일 로직)
+# 파싱 & 정규화
 # ──────────────────────────────────────────────────────────────────
 
 def _validate_types(types: list[str]) -> None:
