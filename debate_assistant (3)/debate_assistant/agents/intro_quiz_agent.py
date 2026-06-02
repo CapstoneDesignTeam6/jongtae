@@ -6,6 +6,7 @@ topic + summary만 넣으면 어떤 주제든 동작 (범용)
 """
 
 import json
+import random
 import re
 
 GENERATE_TOKENS = 2000
@@ -28,9 +29,11 @@ QUIZ_TYPES: dict[str, dict] = {
     "missing_variable": {
         "name": "누락 변수 감지",
         "measure": "부분 사실 하나로 전체를 단정할 때 빠진 핵심 변수를 찾는 능력",
-        "question_template": (
-            "'{partial_fact}'라는 사실만으로 '{conclusion}'을 결론 내릴 때, "
-            "논증이 성립하기 위해 반드시 비교·고려해야 하지만 빠진 핵심 변수는?"
+        "question_guide": (
+            "두 대상을 비교해 결론을 내릴 때, 그 비교가 의미 있으려면 "
+            "함께 봐야 하는데 빠진 것이 무엇인지 묻는 자연스러운 질문을 써라.\n"
+            "좋은 예) 'A와 B 중 어느 쪽이 더 나은지 판단하려면 무엇을 함께 고려해야 하는가?'\n"
+            "나쁜 예) '반드시 누락된 핵심 변수는 무엇인가?' — 이런 메타 표현 절대 금지"
         ),
         "correct_criteria": (
             "이 결론이 성립하려면 반드시 함께 비교해야 할 변수. "
@@ -47,8 +50,11 @@ QUIZ_TYPES: dict[str, dict] = {
     "overgeneralization": {
         "name": "일반화 범위 판단",
         "measure": "하나의 사례에서 끌어낼 수 있는 결론의 적절한 범위를 판단하는 능력",
-        "question_template": (
-            "다음 사례를 보고 가장 적절한 결론을 고르시오: '{case}'"
+        "question_guide": (
+            "사례 하나를 보여주고 이 사례로부터 무엇을 결론 내릴 수 있는지 묻는 "
+            "자연스러운 질문을 써라.\n"
+            "좋은 예) '다음 비교 논의를 바탕으로 추론할 수 있는 가장 적절한 결론은 무엇인가?'\n"
+            "나쁜 예) '일반화 범위를 벗어나지 않은 결론은?' — 이런 메타 표현 절대 금지"
         ),
         "correct_criteria": (
             "사례 하나가 직접 말해주는 것만 담은 결론. "
@@ -65,6 +71,12 @@ QUIZ_TYPES: dict[str, dict] = {
     "counterargument": {
         "name": "반론 구성력",
         "measure": "주장의 숨은 전제를 직접 흔드는 반론을 찾는 능력",
+        "question_guide": (
+            "특정 주장을 제시하고, 그 주장의 논리를 가장 강하게 흔드는 것이 무엇인지 "
+            "묻는 자연스러운 질문을 써라.\n"
+            "좋은 예) 'A에 대한 B라는 주장에 대해 가장 강력한 반론은 무엇인가?'\n"
+            "나쁜 예) '숨은 전제를 부정하는 반론은?' — 이런 메타 표현 절대 금지"
+        ),
         "correct_criteria": (
             "주장이 성립하려면 반드시 참이어야 하는 숨은 전제를 직접 부정하거나 "
             "성립하지 않을 수 있음을 보여주는 반론. "
@@ -157,10 +169,13 @@ class IntroQuizAgent:
 
 
 # ──────────────────────────────────────────────────────────────────
-# 프롬프트 빌더 (핵심: 단일 호출로 고품질 출력)
+# 프롬프트 빌더
 # ──────────────────────────────────────────────────────────────────
 
 def _build_prompt(topic: str, summary: str, qtype: str, meta: dict) -> str:
+    # 정답 위치를 매 호출마다 랜덤 지정 → 쏠림 방지
+    correct_hint = random.randint(0, 3)
+
     counterargument_extra = (
         "[반론 구성력 유형 추가 규칙]\n"
         "- 선지는 한 문장, 간결하게. 조건절 중첩 금지\n"
@@ -179,10 +194,13 @@ def _build_prompt(topic: str, summary: str, qtype: str, meta: dict) -> str:
         "배경 요약: " + summary,
         "퀴즈 유형: " + meta["name"] + " - " + meta["measure"],
         "",
-        "[질문]",
-        "- 주제의 핵심 대상(국가명, 인물명, 개념 등)을 반드시 포함할 것",
+        "[질문 작성 규칙]",
+        "- 주제의 핵심 대상(국가명, 게임명, 인물명, 개념 등)을 반드시 포함할 것",
         "- 단순 암기가 아닌 추론을 요구해야 함",
-        "- 한 문장, 명확하게",
+        "- 한 문장, 명확하고 자연스럽게",
+        "- 절대 금지 표현: '누락된', '반드시 비교해야 할', '숨은 전제', '핵심 변수',",
+        "  '일반화 범위', '논리적 오류' 등 측정 능력을 설명하는 메타 언어를 질문에 쓰지 말 것",
+        "- 질문 작성 가이드: " + meta["question_guide"],
         "",
         "[정답 기준]",
         meta["correct_criteria"],
@@ -199,14 +217,14 @@ def _build_prompt(topic: str, summary: str, qtype: str, meta: dict) -> str:
     if counterargument_extra:
         lines += ["", counterargument_extra]
 
-    choice_format = "- 선지: ...다. 또는 ...된다. 로 끝나는 평서형. 한 문장, 간결하게."
     lines += [
         "",
         "[형식]",
-        choice_format,
-        "- correct_index: choices 배열 0부터 시작 (정답 위치를 매번 다르게 섞을 것)",
+        "- 선지: ...다. 또는 ...된다. 로 끝나는 평서형. 한 문장, 간결하게.",
+        f"- 정답은 반드시 인덱스 {correct_hint} 위치(0부터 시작)에 배치할 것.",
+        "  choices 배열에서 {correct_hint}번째(0-indexed)가 정답이 되도록 선지 순서를 구성해라.".format(correct_hint=correct_hint),
         "- explanation: 정확히 4문장. 1234 기호 대신 (1)(2)(3)(4) 사용.",
-        "  정답 문장 예시: (1)은 ~~이기 때문에 정답이다.",
+        "  정답 문장 예시: ({n})은 ~~이기 때문에 정답이다.".format(n=correct_hint + 1),
         "  오답 문장 예시: (2)는 ~~처럼 보이지만, ~~점에서 정답보다 덜 핵심적이라 오답이다.",
         "",
         "JSON만 출력. 백틱/마크다운 금지. 다른 말 금지.",
@@ -216,7 +234,7 @@ def _build_prompt(topic: str, summary: str, qtype: str, meta: dict) -> str:
         '  "type": "reasoning",',
         '  "question": "질문 텍스트?",',
         '  "choices": ["선지A다.", "선지B다.", "선지C다.", "선지D다."],',
-        '  "correct_index": 0,',
+        f'  "correct_index": {correct_hint},',
         '  "explanation": "(1)은 ... (2)는 ... (3)은 ... (4)는 ..."',
         '}',
     ]
@@ -320,26 +338,17 @@ def _sync_correct_index(correct_idx: int, explanation: str) -> int:
 
 
 def _normalize_choices(choices: list[str]) -> list[str]:
-    """선지를 올바른 종결형으로 정규화한다.
-
-    - 의문문(? 로 끝나는 것)은 그대로 유지: "~인가?" -> "~인가?"
-    - 평서형은 "...다." 로 통일
-    - "~인가?다." 같은 이중 종결 제거
-    """
+    """선지를 올바른 종결형으로 정규화한다."""
     result = []
     for c in choices:
         c = c.strip()
-        # 이중 종결 제거: "~인가?다." / "~된다.다." 등
         c = c.rstrip(".")
         while c.endswith("다") and (c.endswith("인가?다") or c.endswith("된다다") or c.endswith("다다")):
             c = c[:-1]
-        # 의문문은 그대로
         if c.endswith("?"):
             result.append(c)
-        # 이미 "다"로 끝나면 마침표만 추가
         elif c.endswith("다"):
             result.append(c + ".")
-        # 그 외는 "다." 추가
         else:
             result.append(c + "다.")
     return result
